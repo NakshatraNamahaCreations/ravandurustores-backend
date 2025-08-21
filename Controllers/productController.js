@@ -429,6 +429,7 @@ const productController = {
   deleteProduct: async (req, res) => {
     try {
       const product = await Product.findById(req.params.id);
+      console.log(product,"product")
       if (!product) {
         return res.status(404).json({ error: "Product not found" });
       }
@@ -454,3 +455,4 @@ const productController = {
 };
 
 module.exports = productController;
+
