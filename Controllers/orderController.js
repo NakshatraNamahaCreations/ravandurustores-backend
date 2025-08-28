@@ -6,41 +6,49 @@ const orderController = {
   // Create a new order
   createOrder: async (req, res) => {
     try {
-      const { addressId, amount, paymentMode, quantity, productImage, productName } = req.body;
+      const { addressId, amount, paymentMode, items } = req.body;
 
-      // Validate required fields, including productName
-      if (!addressId || !amount || !paymentMode || !quantity || !productName) {
-        return res.status(400).json({ error: "All fields are required, including productName." });
+      // Validate required fields
+      if (!addressId || !amount || !paymentMode || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: "All required fields must be provided, including items." });
       }
 
+      // Check address existence
       const addressExists = await Address.findById(addressId);
       if (!addressExists) {
         return res.status(404).json({ error: "Address not found." });
       }
 
-      // Find the product by productName
-      const product = await Product.findOne({ name: productName });
-      if (!product) {
-        return res.status(404).json({ error: "Product not found." });
+      // Validate and update product stock
+      for (const item of items) {
+        const { productName, quantity } = item;
+
+        // Check for missing fields
+        if (!productName || !quantity || quantity <= 0) {
+          return res.status(400).json({ error: "Each item must have a valid productName and quantity > 0." });
+        }
+
+        const product = await Product.findOne({ name: productName });
+        if (!product) {
+          return res.status(404).json({ error: `Product '${productName}' not found.` });
+        }
+
+        if (product.stock < quantity) {
+          return res.status(400).json({ error: `Insufficient stock for '${productName}'. Available: ${product.stock}` });
+        }
+
+        // Update stock and soldStock
+        product.stock -= quantity;
+        product.soldStock = (product.soldStock || 0) + quantity;
+        await product.save();
       }
 
-      // Check if enough stock is available
-      if (product.stock < quantity) {
-        return res.status(400).json({ error: "Insufficient stock available." });
-      }
-
-      // Update product stock and soldStock
-      product.stock -= quantity;
-      product.soldStock = (product.soldStock || 0) + quantity;
-      await product.save();
-
+      // All validations passed, create order
       const newOrder = new Order({
         address: addressId,
         amount,
         paymentMode,
-        quantity,
-        productImage, // optional
-        productName, // required
+        items,
       });
 
       await newOrder.save();
