@@ -1,43 +1,12 @@
-// const mongoose = require("mongoose");
 
-// const orderSchema = new mongoose.Schema({
-//   address: {
-//     type: mongoose.Schema.Types.ObjectId,
-//     ref: "Address",
-//     required: true,
-//   },
-//   amount: {
-//     type: Number,
-//     required: true,
-//   },
-//   paymentMode: {
-//     type: String,
-//     enum: ["COD", "Online", "UPI", "Card"],
-//     required: true,
-//   },
-//   productImage: {
-//     type: String,
-//   },
-//   productName: {
-//     type: String,
-//     required: true,
-//   },
-//   quantity: {
-//     type: Number,
-//     required: true,
-//   },
-//   status: {
-//     type: String,
-//     default: "Pending", // can be "Pending", "Confirmed", "Delivered", etc.
-//   },
-// }, { timestamps: true });
-
-// module.exports = mongoose.model("Order", orderSchema);
 
 const mongoose = require("mongoose");
 
 const orderSchema = new mongoose.Schema(
   {
+      merchantTransactionId: { type: String, unique: true },
+  customOrderId: { type: String, unique: true, index: true },
+    customerId: { type: String },
     address: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Address",
@@ -75,8 +44,20 @@ const orderSchema = new mongoose.Schema(
       type: String,
       default: "Pending",
     },
+     paymentTransactionId: { type: String },
   },
   { timestamps: true }
 );
-
+orderSchema.pre("save", async function (next) {
+  if (!this.customOrderId) {
+    const lastOrder = await mongoose.model("Order").findOne().sort({ createdAt: -1 });
+    let newId = "MO001";
+    if (lastOrder?.customOrderId) {
+      const lastNum = parseInt(lastOrder.customOrderId.replace("MO", ""), 10);
+      newId = `MO${String(lastNum + 1).padStart(3, "0")}`;
+    }
+    this.customOrderId = newId;
+  }
+  next();
+});
 module.exports = mongoose.model("Order", orderSchema);
