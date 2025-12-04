@@ -54,7 +54,7 @@ exports.initiatePayment = async (req, res) => {
       paymentFlow: {
         type: "PG_CHECKOUT",
         merchantUrls: {
-          redirectUrl: `https://ravandurustores-backend.onrender.com/api/payments/verify?merchantId=${merchantTransactionId}`,
+          redirectUrl: `https://api.ravandurustores.com/api/payments/verify?merchantId=${merchantTransactionId}`,
         },
       },
     };
