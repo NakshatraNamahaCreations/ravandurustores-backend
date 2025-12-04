@@ -4,60 +4,70 @@ const Product = require("../models/Product");
 
 const orderController = {
   // Create a new order
-  createOrder: async (req, res) => {
-    try {
-      const { addressId, amount, paymentMode, items } = req.body;
+createOrder: async (req, res) => {
+  try {
+    const { addressId, amount, paymentMode, items } = req.body;
 
-      // Validate required fields
-      if (!addressId || !amount || !paymentMode || !Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({ error: "All required fields must be provided, including items." });
-      }
-
-      // Check address existence
-      const addressExists = await Address.findById(addressId);
-      if (!addressExists) {
-        return res.status(404).json({ error: "Address not found." });
-      }
-
-      // Validate and update product stock
-      for (const item of items) {
-        const { productName, quantity } = item;
-
-        // Check for missing fields
-        if (!productName || !quantity || quantity <= 0) {
-          return res.status(400).json({ error: "Each item must have a valid productName and quantity > 0." });
-        }
-
-        const product = await Product.findOne({ name: productName });
-        if (!product) {
-          return res.status(404).json({ error: `Product '${productName}' not found.` });
-        }
-
-        if (product.stock < quantity) {
-          return res.status(400).json({ error: `Insufficient stock for '${productName}'. Available: ${product.stock}` });
-        }
-
-        // Update stock and soldStock
-        product.stock -= quantity;
-        product.soldStock = (product.soldStock || 0) + quantity;
-        await product.save();
-      }
-
-      // All validations passed, create order
-      const newOrder = new Order({
-        address: addressId,
-        amount,
-        paymentMode,
-        items,
-      });
-
-      await newOrder.save();
-      res.status(201).json({ message: "Order created successfully", order: newOrder });
-    } catch (error) {
-      console.error("Error creating order:", error);
-      res.status(500).json({ error: "Server error while creating order" });
+    if (!addressId || !amount || !paymentMode || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "All required fields must be provided, including items." });
     }
-  },
+
+    const addressExists = await Address.findById(addressId);
+    if (!addressExists) {
+      return res.status(404).json({ error: "Address not found." });
+    }
+
+    // Validate and update product stock
+    for (const item of items) {
+      const { productName, quantity, unit } = item;
+
+      if (!productName || !quantity || quantity <= 0 || !unit) {
+        return res.status(400).json({ 
+          error: "Each item must have productName, quantity > 0 and unit." 
+        });
+      }
+
+      const product = await Product.findOne({ name: productName });
+      if (!product) {
+        return res.status(404).json({ error: `Product '${productName}' not found.` });
+      }
+
+      if (product.stock < quantity) {
+        return res.status(400).json({ 
+          error: `Insufficient stock for '${productName}'. Available: ${product.stock}` 
+        });
+      }
+
+      product.stock -= quantity;
+      product.soldStock = (product.soldStock || 0) + quantity;
+      await product.save();
+    }
+
+    // Format items with unit included
+    const formattedItems = items.map(it => ({
+      productName: it.productName,
+      productImage: it.productImage,
+      price: it.price,
+      quantity: it.quantity,
+      unit: it.unit,   // 👈 ADDING UNIT HERE
+    }));
+
+    const newOrder = new Order({
+      address: addressId,
+      amount,
+      paymentMode,
+      items: formattedItems,
+    });
+
+    await newOrder.save();
+    res.status(201).json({ message: "Order created successfully", order: newOrder });
+
+  } catch (error) {
+    console.error("Error creating order:", error);
+    res.status(500).json({ error: "Server error while creating order" });
+  }
+},
+
 
   // Get all orders
   getAllOrders: async (req, res) => {
