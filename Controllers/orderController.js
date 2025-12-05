@@ -6,142 +6,202 @@ const orderController = {
   // -----------------------------
   // CREATE ORDER
   // -----------------------------
-  createOrder: async (req, res) => {
-    try {
-      const { addressId, amount, paymentMode, items } = req.body;
+ // inside orderController
+createOrder: async (req, res) => {
+  try {
+    const { addressId, amount, paymentMode, items, merchantTransactionId } = req.body;
 
-      if (!addressId || !amount || !paymentMode || !Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({ message: "Invalid or missing fields." });
+    if (
+      !addressId ||
+      !amount ||
+      !paymentMode ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      return res.status(400).json({ message: "Invalid or missing fields." });
+    }
+
+    const address = await Address.findById(addressId);
+    if (!address) return res.status(404).json({ message: "Address not found" });
+
+    // helper: normalize unit strings
+    const normalizeUnit = (u) => {
+      if (!u) return null;
+      u = String(u).trim().toLowerCase();
+      if (u === "gm" || u === "gms" || u === "grams" || u === "gram") return "g";
+      if (u === "kg" || u === "kgs" || u === "kilogram" || u === "kilograms") return "kg";
+      if (u === "ml") return "ml";
+      if (u === "ltr" || u === "l") return "ltr";
+      if (u === "pcs" || u === "pc" || u === "piece" || u === "pieces") return "pcs";
+      if (u === "packet") return "packet";
+      if (u === "box") return "box";
+      if (u === "dozen") return "dozen";
+      return u; // fallback: return as-is
+    };
+
+    // Calculate and validate amount
+    let calculatedAmount = 0;
+
+    // First pass: compute amount and validate stock
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product) return res.status(404).json({ message: `Product not found: ${item.productId}` });
+
+      // determine order quantity (number of packs)
+      const orderQty = Number(item.qty ?? item.quantity ?? 1);
+
+      // variant-level stock & price
+      let variant = null;
+      let variantStock = product.stock ?? 0;
+      if (item.variantId) {
+        variant = product.variants?.id(item.variantId) ?? null;
+        if (!variant) return res.status(404).json({ message: `Variant not found: ${item.variantId}` });
+        // variant might not have numeric stock; fall back to product stock
+        variantStock = (variant.stock ?? variant.quantity ?? product.stock ?? 0);
       }
 
-      const address = await Address.findById(addressId);
-      if (!address) return res.status(404).json({ message: "Address not found" });
-
-      let calculatedAmount = 0;
-
-      // Validate items, stock, and calculate total
-      for (const item of items) {
-        const product = await Product.findById(item.productId);
-        if (!product) return res.status(404).json({ message: `Product not found: ${item.productId}` });
-
-        // Variant-level stock check if variantId exists
-        let variantStock = product.stock;
-        if (item.variantId) {
-          const variant = product.variants.id(item.variantId);
-          if (!variant) return res.status(404).json({ message: `Variant not found: ${item.variantId}` });
-          variantStock = variant.stock;
-        }
-
-        if (variantStock < item.qty) {
-          return res.status(400).json({ message: `Insufficient stock for ${product.name}` });
-        }
-
-        // Use variant price if provided
-        const price = item.price ?? (item.variantId ? product.variants.id(item.variantId)?.price : product.price);
-        calculatedAmount += price * item.qty;
+      // If stock is defined and numeric, check for availability
+      if (typeof variantStock === "number" && variantStock < orderQty) {
+        return res.status(400).json({ message: `Insufficient stock for ${product.name}` });
       }
 
-      if (amount !== calculatedAmount) {
-        return res.status(400).json({
-          message: "Amount mismatch. Please refresh cart.",
-          calculatedAmount,
-        });
-      }
+      // choose price precedence: item.price > variant.price > product.price
+      const unitPrice = Number(item.price ?? (variant?.price ?? product.price ?? 0));
 
-      // Reduce stock
-      for (const item of items) {
-        if (item.variantId) {
+      calculatedAmount += unitPrice * orderQty;
+    }
+
+    // compare amounts with tolerance for floats
+    const floatEq = (a, b, eps = 0.001) => Math.abs(Number(a) - Number(b)) < eps;
+    if (!floatEq(amount, calculatedAmount)) {
+      return res.status(400).json({
+        message: "Amount mismatch. Please refresh cart.",
+        calculatedAmount,
+      });
+    }
+
+    // Second pass: reduce stock & build formatted items with normalized packSize/packUnit
+    const formattedItems = [];
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product) return res.status(404).json({ message: `Product not found: ${item.productId}` });
+
+      const orderQty = Number(item.qty ?? item.quantity ?? 1);
+
+      // pick name/image
+      const productName = item.productName ?? product.name ?? "Unknown product";
+      const productImage = item.productImage ?? (product.images && product.images[0]) ?? "";
+
+      // price normalize
+      const variant = item.variantId ? product.variants?.id(item.variantId) : null;
+      const price = Number(item.price ?? (variant?.price ?? product.price ?? 0));
+
+      // stock decrement
+      if (item.variantId && variant) {
+        // try to decrement variant stock if variant has stock numeric
+        if (typeof variant.stock === "number") {
           await Product.updateOne(
             { _id: item.productId, "variants._id": item.variantId },
-            { $inc: { "variants.$.stock": -item.qty } }
+            { $inc: { "variants.$.stock": -orderQty } }
           );
         } else {
-          await Product.findByIdAndUpdate(item.productId, { $inc: { stock: -item.qty } });
+          // decrement product-level stock
+          await Product.findByIdAndUpdate(item.productId, { $inc: { stock: -orderQty } });
         }
+      } else {
+        await Product.findByIdAndUpdate(item.productId, { $inc: { stock: -orderQty } });
       }
 
-      // Format items for order
-     // inside createOrder, replace the formattedItems building loop with this:
-const formattedItems = [];
+      // Normalize packSize/packUnit from several possible sources
+      let packSize = null;
+      let packUnit = null;
 
-for (const item of items) {
-  const product = await Product.findById(item.productId);
-  if (!product) return res.status(404).json({ message: `Product not found: ${item.productId}` });
+      // 1) client-provided explicit fields (preferred)
+      if (item.packSize) {
+        const m = String(item.packSize).match(/([\d.]+)/);
+        if (m) packSize = Number(m[1]);
+      }
+      if (item.packUnit) packUnit = normalizeUnit(item.packUnit);
 
-  // pick productName and productImage from product (or accept from client if provided)
-  const productName = item.productName ?? product.name ?? "Unknown product";
-  const productImage = item.productImage ?? (product.images && product.images[0]) ?? "";
+      // 2) item.level unit/weight fields
+      if ((!packSize || !packUnit) && (item.weight || item.selectedWeight || item.selectedUnit)) {
+        if (!packSize && (item.weight || item.selectedWeight)) {
+          const m = String(item.weight ?? item.selectedWeight).match(/([\d.]+)/);
+          if (m) packSize = Number(m[1]);
+        }
+        if (!packUnit && item.selectedUnit) packUnit = normalizeUnit(item.selectedUnit);
+      }
 
-  // quantity = how many packs customer ordered (qty vs quantity)
-  const quantity = item.qty ?? item.quantity ?? 1;
+      // 3) variant fields (product.variants entries)
+      if ((!packSize || !packUnit) && variant) {
+        // variant.quantity (string like "200") -> number
+        if (!packSize && variant.quantity) {
+          const m = String(variant.quantity).match(/([\d.]+)/);
+          if (m) packSize = Number(m[1]);
+        }
+        if (!packUnit && variant.unit) packUnit = normalizeUnit(variant.unit);
+      }
 
-  // DEFAULT unit fallback
-  const fallbackUnit = item.unit ?? product.unit ?? "pcs";
+      // 4) product-level fallback (if product stores quantity/unit)
+      if ((!packSize || !packUnit) && product.variants && product.variants.length > 0) {
+        // try the first variant as last fallback
+        const v0 = product.variants[0];
+        if (!packSize && v0?.quantity) {
+          const m = String(v0.quantity).match(/([\d.]+)/);
+          if (m) packSize = Number(m[1]);
+        }
+        if (!packUnit && v0?.unit) packUnit = normalizeUnit(v0.unit);
+      }
 
-  // Try to obtain packSize/packUnit in this priority:
-  // 1. item.packSize + item.packUnit (client explicitly submitted)
-  // 2. variant-level fields (if variantId provided and variant has weight/size fields)
-  // 3. product-level default size/unit (if product has them)
-  let packSize = item.packSize ?? item.weight ?? null;
-  let packUnit = item.packUnit ?? item.selectedUnit ?? null;
+      // ensure consistent types
+      if (packSize !== null) packSize = Number(packSize);
+      if (!packUnit) packUnit = String(item.unit ?? product.unit ?? "pcs");
 
-  if ((!packSize || !packUnit) && item.variantId) {
-    const variant = product.variants?.id(item.variantId);
-    if (variant) {
-      // adapt these keys to whatever your variant schema uses: weight, size, packSize, unit, packUnit, label, etc.
-      packSize = packSize ?? variant.packSize ?? variant.weight ?? variant.size ?? variant.selectedWeight ?? null;
-      packUnit = packUnit ?? variant.packUnit ?? variant.unit ?? variant.selectedUnit ?? null;
-    }
-  }
+      // final fallback mapping (convert 'gm' -> 'g' etc)
+      packUnit = normalizeUnit(packUnit) ?? "pcs";
 
-  // fallback to product-level descriptors if still missing
-  packSize = packSize ?? product.packSize ?? product.weight ?? null;
-  packUnit = packUnit ?? product.packUnit ?? product.unit ?? null;
-
-  // Normalize numeric packSize if it's a string like "200 gm"
-  if (typeof packSize === "string") {
-    const m = packSize.match(/([\d.]+)/);
-    if (m) packSize = Number(m[1]);
-  }
-
-  // price normalize - prefer item.price, else variant price, else product.price
-  const price = item.price ?? (item.variantId ? (product.variants?.id(item.variantId)?.price ?? product.price) : product.price) ?? 0;
-
-  formattedItems.push({
-    productId: item.productId,
-    variantId: item.variantId ?? null,
-    productName,
-    productImage,
-    price,
-    quantity,               // how many packs ordered
-    unit: fallbackUnit,     // unit for the ordering quantity (usually pcs)
-    packSize: packSize ?? undefined,   // numeric pack size (e.g. 200)
-    packUnit: packUnit ?? undefined,   // unit for pack size (e.g. 'gm')
-  });
-}
-
-
-      // The Order model expects `address` (per your schema). Use that field name.
-      const newOrder = new Order({
-        userId: req.user?._id,
-        address: addressId,     // <- IMPORTANT: set `address`, not `addressId`
-        amount,
-        paymentMode,
-        items: formattedItems,
-        status: "Pending",
-      })
-
-      const savedOrder = await newOrder.save();
-
-      res.status(201).json({
-        message: "Order placed successfully",
-        order: savedOrder,
+      formattedItems.push({
+        productId: item.productId,
+        variantId: item.variantId ?? null,
+        productName,
+        productImage,
+        price,
+        quantity: orderQty,
+        unit: item.unit ?? product.unit ?? "pcs",
+        packSize: packSize ?? undefined,
+        packUnit: packUnit ?? undefined,
       });
-    } catch (error) {
-      console.error("createOrder error:", error);
-      res.status(500).json({ message: "Server error", error });
     }
-  },
+
+    // build order payload but only include merchantTransactionId if provided (avoid saving null)
+    const newOrderData = {
+      userId: req.user?._id ?? req.body.userId ?? null,
+      address: addressId,
+      amount,
+      paymentMode,
+      items: formattedItems,
+      status: "Pending",
+    };
+    if (merchantTransactionId) newOrderData.merchantTransactionId = merchantTransactionId;
+
+    const newOrder = new Order(newOrderData);
+
+    try {
+      const savedOrder = await newOrder.save();
+      return res.status(201).json({ message: "Order placed successfully", order: savedOrder });
+    } catch (saveErr) {
+      // handle duplicate index (11000) explicitly
+      if (saveErr.code === 11000) {
+        return res.status(400).json({ message: "Duplicate key error", details: saveErr.keyValue });
+      }
+      throw saveErr; // bubble up to outer catch
+    }
+  } catch (error) {
+    console.error("createOrder error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message || error });
+  }
+},
+
 
   // -----------------------------
   // GET ALL ORDERS (Admin)
@@ -149,8 +209,10 @@ for (const item of items) {
   getAllOrders: async (req, res) => {
     try {
       const orders = await Order.find()
-        .populate("userId", "name email")
-        .populate("addressId")
+        // .populate("userId", "name email")
+        // .populate("addressId")
+        .populate("address")
+
         .populate("items.productId", "name images price")
         .sort({ createdAt: -1 });
 
@@ -168,7 +230,8 @@ for (const item of items) {
     try {
       const order = await Order.findById(req.params.id)
         .populate("userId", "name email")
-        .populate("addressId")
+        .populate("address", "firstName lastName address city state pincode phone")
+
         .populate("items.productId", "name images price");
 
       if (!order) return res.status(404).json({ message: "Order not found" });
@@ -186,12 +249,20 @@ for (const item of items) {
   updateOrderStatus: async (req, res) => {
     try {
       const { status } = req.body;
-      if (!status) return res.status(400).json({ message: "Status is required" });
+      if (!status)
+        return res.status(400).json({ message: "Status is required" });
 
-      const updatedOrder = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true });
-      if (!updatedOrder) return res.status(404).json({ message: "Order not found" });
+      const updatedOrder = await Order.findByIdAndUpdate(
+        req.params.id,
+        { status },
+        { new: true }
+      );
+      if (!updatedOrder)
+        return res.status(404).json({ message: "Order not found" });
 
-      res.status(200).json({ message: "Status updated successfully", order: updatedOrder });
+      res
+        .status(200)
+        .json({ message: "Status updated successfully", order: updatedOrder });
     } catch (error) {
       console.error("updateOrderStatus error:", error);
       res.status(500).json({ message: "Server error", error });
@@ -204,9 +275,12 @@ for (const item of items) {
   deleteOrder: async (req, res) => {
     try {
       const deletedOrder = await Order.findByIdAndDelete(req.params.id);
-      if (!deletedOrder) return res.status(404).json({ message: "Order not found" });
+      if (!deletedOrder)
+        return res.status(404).json({ message: "Order not found" });
 
-      res.status(200).json({ message: "Order deleted successfully", order: deletedOrder });
+      res
+        .status(200)
+        .json({ message: "Order deleted successfully", order: deletedOrder });
     } catch (error) {
       console.error("deleteOrder error:", error);
       res.status(500).json({ message: "Server error", error });

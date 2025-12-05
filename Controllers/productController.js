@@ -310,19 +310,33 @@ const productController = {
         return res.status(400).json({ error: "All fields are required." });
       }
 
-      let parsedVariants = [];
-      try {
-        parsedVariants = JSON.parse(variants);
-      } catch (e) {
-        console.error("❌ Invalid variants JSON:", e);
-        return res.status(400).json({ error: "Invalid variants format." });
-      }
+ // inside createProduct
+let parsedVariants = [];
 
-      if (!Array.isArray(parsedVariants) || parsedVariants.length === 0) {
-        return res
-          .status(400)
-          .json({ error: "At least one variant is required." });
-      }
+// Accept either:
+// - JSON string (from multipart/form-data) OR
+// - Array (if client sent application/json without files)
+if (!variants) {
+  return res.status(400).json({ error: "Variants are required." });
+}
+
+if (typeof variants === "string") {
+  try {
+    parsedVariants = JSON.parse(variants);
+  } catch (e) {
+    console.error("❌ Invalid variants JSON:", e);
+    return res.status(400).json({ error: "Invalid variants format." });
+  }
+} else if (Array.isArray(variants)) {
+  parsedVariants = variants;
+} else {
+  return res.status(400).json({ error: "Invalid variants format." });
+}
+
+if (!Array.isArray(parsedVariants) || parsedVariants.length === 0) {
+  return res.status(400).json({ error: "At least one variant is required." });
+}
+
 
       if (
         !req.files ||
