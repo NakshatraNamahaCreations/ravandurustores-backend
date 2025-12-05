@@ -1,20 +1,81 @@
+// models/Order.js
 const mongoose = require("mongoose");
+
+const orderItemSchema = new mongoose.Schema({
+  productId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Product",
+  },
+  variantId: {
+    type: mongoose.Schema.Types.ObjectId,
+  },
+
+  productName: {
+    type: String,
+    required: true,
+  },
+
+  productImage: {
+    type: String,
+  },
+
+  // price per pack / per selected variant
+  price: {
+    type: Number,
+    required: true,
+  },
+
+  // how many packs/units the customer ordered (integer)
+  quantity: {
+    type: Number,
+    required: true,
+    default: 1,
+  },
+
+  // descriptive unit for the item as a whole (kept for backwards compatibility)
+  unit: {
+    type: String,
+    enum: [
+      "g",
+      "kg",
+      "mg",
+      "ltr",
+      "ml",
+      "pcs",
+      "packet",
+      "box",
+      "dozen",
+      "unit",
+      "other",
+    ],
+    default: "pcs",
+  },
+
+  // NEW: pack size (numeric) and pack unit (e.g. 200, 'g') — taken from product.variant
+  packSize: {
+    type: Number, // e.g. 200
+  },
+  packUnit: {
+    type: String, // e.g. 'g', 'kg', 'ml', 'pcs'
+  },
+});
 
 const orderSchema = new mongoose.Schema(
   {
-    merchantTransactionId: { 
-      type: String, 
-      unique: true 
+    merchantTransactionId: {
+      type: String,
+      unique: true,
+      sparse: true,
     },
 
-    customOrderId: { 
-      type: String, 
-      unique: true, 
-      index: true 
+    customOrderId: {
+      type: String,
+      unique: true,
+      index: true,
     },
 
-    customerId: { 
-      type: String 
+    customerId: {
+      type: String,
     },
 
     address: {
@@ -34,54 +95,15 @@ const orderSchema = new mongoose.Schema(
       required: true,
     },
 
-    items: [
-      {
-        productName: {
-          type: String,
-          required: true,
-        },
-
-        productImage: {
-          type: String,
-        },
-
-        price: {
-          type: Number,
-          required: true,
-        },
-
-        quantity: {
-          type: Number,
-          required: true,
-        },
-
-        unit: {
-          type: String,
-          enum: [
-            "g",
-            "kg",
-            "mg",
-            "ltr",
-            "ml",
-            "pcs",
-            "packet",
-            "box",
-            "dozen",
-            "unit",
-            "other"
-          ],
-          default: "pcs",
-        },
-      },
-    ],
+    items: [orderItemSchema],
 
     status: {
       type: String,
       default: "Pending",
     },
 
-    paymentTransactionId: { 
-      type: String 
+    paymentTransactionId: {
+      type: String,
     },
   },
   { timestamps: true }
@@ -90,10 +112,7 @@ const orderSchema = new mongoose.Schema(
 // Auto-generate customOrderId (MO001, MO002, ...)
 orderSchema.pre("save", async function (next) {
   if (!this.customOrderId) {
-    const lastOrder = await mongoose
-      .model("Order")
-      .findOne()
-      .sort({ createdAt: -1 });
+    const lastOrder = await mongoose.model("Order").findOne().sort({ createdAt: -1 });
 
     let newId = "MO001";
 

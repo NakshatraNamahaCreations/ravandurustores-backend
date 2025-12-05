@@ -4,69 +4,181 @@ const Product = require("../models/Product");
 
 const orderController = {
   // Create a new order
+// Replace your createOrder function with this implementation
 createOrder: async (req, res) => {
   try {
-    const { addressId, amount, paymentMode, items } = req.body;
+    // Accept either cart items or simple items array
+    // Expectation: items[] each can be:
+    // { productId, variantId, productName, quantity, qty, unit, price }
+    const { addressId, paymentMode, items, amount: clientAmount } = req.body;
 
-    if (!addressId || !amount || !paymentMode || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "All required fields must be provided, including items." });
+    if (!addressId || !paymentMode || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "addressId, paymentMode and non-empty items array are required." });
     }
 
+    // Verify address exists
     const addressExists = await Address.findById(addressId);
-    if (!addressExists) {
-      return res.status(404).json({ error: "Address not found." });
-    }
+    if (!addressExists) return res.status(404).json({ error: "Address not found." });
 
-    // Validate and update product stock
-    for (const item of items) {
-      const { productName, quantity, unit } = item;
+    const orderItems = [];
+    let computedAmount = 0;
 
-      if (!productName || !quantity || quantity <= 0 || !unit) {
-        return res.status(400).json({ 
-          error: "Each item must have productName, quantity > 0 and unit." 
-        });
+    // Process each cart item
+    for (const incoming of items) {
+      // normalize incoming values
+      const incomingQty = Number(incoming.quantity ?? incoming.qty ?? 0) || 0;
+      if (incomingQty <= 0) {
+        return res.status(400).json({ error: "Each item must have quantity > 0." });
       }
 
-      const product = await Product.findOne({ name: productName });
+      // Identify product: prefer productId, else fallback to productName lookup
+      let product = null;
+      if (incoming.productId) {
+        product = await Product.findById(incoming.productId).lean();
+      } else if (incoming.productName) {
+        // your existing code searched by name; keep fallback but prefer ID
+        product = await Product.findOne({ name: incoming.productName }).lean();
+      }
       if (!product) {
-        return res.status(404).json({ error: `Product '${productName}' not found.` });
+        return res.status(404).json({ error: `Product not found for item: ${incoming.productName || incoming.productId}` });
       }
 
-      if (product.stock < quantity) {
-        return res.status(400).json({ 
-          error: `Insufficient stock for '${productName}'. Available: ${product.stock}` 
-        });
+      // Choose variant:
+      // 1) if incoming.variantId provided -> pick that
+      // 2) else try to find variant matching incoming.unit and incoming.packSize/quantity
+      // 3) else fallback to first variant if available
+      let selectedVariant = null;
+      if (Array.isArray(product.variants) && product.variants.length > 0) {
+        if (incoming.variantId) {
+          selectedVariant = product.variants.find(v => String(v._id) === String(incoming.variantId));
+        }
+        if (!selectedVariant) {
+          // attempt match on unit + quantity
+          const incomingUnit = (incoming.unit || incoming.packUnit || "").toString().trim().toLowerCase();
+          const incomingPackSize = incoming.packSize ?? incoming.variantQuantity ?? incoming.variantQty ?? null;
+          selectedVariant = product.variants.find(v => {
+            // variant.quantity might be string "200" or number
+            const vQty = v.quantity != null ? String(v.quantity).trim().toLowerCase() : "";
+            const vUnit = v.unit != null ? String(v.unit).trim().toLowerCase() : "";
+            // if both pack size & unit present in incoming, match both
+            if (incomingPackSize && incomingUnit) {
+              return vUnit === incomingUnit && String(v.quantity) === String(incomingPackSize);
+            }
+            // if only unit provided, match unit
+            if (incomingUnit && !incomingPackSize) {
+              return vUnit === incomingUnit;
+            }
+            return false;
+          });
+        }
+        if (!selectedVariant) {
+          // fallback to first variant
+          selectedVariant = product.variants[0];
+        }
       }
 
-      product.stock -= quantity;
-      product.soldStock = (product.soldStock || 0) + quantity;
-      await product.save();
-    }
+      // Determine price & packSize/packUnit from variant (or product fallback)
+      let linePrice = 0;
+      let packSize = undefined;
+      let packUnit = undefined;
+      let variantId = null;
 
-    // Format items with unit included
-    const formattedItems = items.map(it => ({
-      productName: it.productName,
-      productImage: it.productImage,
-      price: it.price,
-      quantity: it.quantity,
-      unit: it.unit,   // 👈 ADDING UNIT HERE
-    }));
+      if (selectedVariant) {
+        linePrice = Number(selectedVariant.price ?? product.price ?? incoming.price ?? 0) || 0;
+        if (selectedVariant.quantity != null && selectedVariant.quantity !== "") {
+          const parsed = Number(String(selectedVariant.quantity).replace(",", "."));
+          if (!Number.isNaN(parsed)) packSize = parsed;
+        }
+        if (selectedVariant.unit) packUnit = String(selectedVariant.unit).trim().toLowerCase();
+        variantId = selectedVariant._id ? selectedVariant._id : null;
+      } else {
+        // no variants present: use product-level values or incoming fallbacks
+        linePrice = Number(product.price ?? incoming.price ?? 0) || 0;
+        if (product.quantity != null && product.quantity !== "") {
+          const parsed = Number(String(product.quantity).replace(",", "."));
+          if (!Number.isNaN(parsed)) packSize = parsed;
+        }
+        if (product.unit) packUnit = String(product.unit).trim().toLowerCase();
+      }
 
+      // Ordered quantity = how many packs/units user ordered
+      const orderedQty = Number(incomingQty) || 1;
+
+      // compute totals
+      const lineTotal = linePrice * orderedQty;
+      computedAmount += lineTotal;
+
+      // Build the order item shape that preserves variant info
+      const orderItem = {
+        productId: product._id,
+        variantId: variantId,
+        productName: product.productName || product.name || incoming.productName || "Item",
+        productImage: (product.images && product.images[0]) || product.productImage || incoming.productImage || "",
+        price: linePrice,
+        quantity: orderedQty,        // number of packs ordered
+      };
+
+      // keep backward compatible 'unit' if you want
+      if (packUnit) orderItem.unit = packUnit;
+      if (packSize !== undefined) orderItem.packSize = packSize;
+      if (variantId) orderItem.variantId = variantId;
+
+      orderItems.push(orderItem);
+
+      // ---- STOCK UPDATE ----
+      // Prefer decreasing variant-level stock if present; otherwise product-level stock.
+      // Example: product.variants[i].stock OR product.stock
+      try {
+        // Use atomic updates where possible
+        if (variantId && product.variants && product.variants.length > 0) {
+          // find if variant stored with stock in DB (not lean copy)
+          // Best effort: update variant stock with an update query
+          const variantStockField = product.variants.reduce((acc, v, idx) => {
+            if (String(v._id) === String(variantId)) return idx; 
+            return acc;
+          }, -1);
+
+          // if variant index found, attempt to decrement product.variants[index].stock
+          if (variantStockField >= 0 && product.variants[variantStockField].stock != null) {
+            // update using positional operator
+            const updateQuery = { _id: product._id, "variants._id": variantId };
+            const updateAction = { $inc: { "variants.$.stock": -orderedQty, soldStock: orderedQty } };
+            await Product.updateOne(updateQuery, updateAction);
+          } else {
+            // fallback decrement product.stock
+            await Product.updateOne({ _id: product._id }, { $inc: { stock: -orderedQty, soldStock: orderedQty } });
+          }
+        } else {
+          // no variant information -> decrement product level
+          await Product.updateOne({ _id: product._id }, { $inc: { stock: -orderedQty, soldStock: orderedQty } });
+        }
+      } catch (stockErr) {
+        // don't fail the whole order due to stock update race here, but log it
+        console.warn("Warning: failed to update stock for product", product._id, stockErr);
+      }
+    } // end for each item
+
+    // If you prefer server to compute amount, use computedAmount.
+    // To preserve backwards compatibility, if client provided amount and you trust it, you could use that.
+    const finalAmount = Number(computedAmount) || Number(clientAmount) || 0;
+
+    // Create order
     const newOrder = new Order({
       address: addressId,
-      amount,
+      amount: finalAmount,
       paymentMode,
-      items: formattedItems,
+      items: orderItems,
     });
 
     await newOrder.save();
-    res.status(201).json({ message: "Order created successfully", order: newOrder });
 
+    return res.status(201).json({ message: "Order created successfully", order: newOrder });
   } catch (error) {
     console.error("Error creating order:", error);
-    res.status(500).json({ error: "Server error while creating order" });
+    return res.status(500).json({ error: "Server error while creating order" });
   }
 },
+
 
 
   // Get all orders
