@@ -1,10 +1,10 @@
-// models/Order.js
 const mongoose = require("mongoose");
 
 const orderItemSchema = new mongoose.Schema({
   productId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Product",
+    index: true,
   },
   variantId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -25,14 +25,18 @@ const orderItemSchema = new mongoose.Schema({
     required: true,
   },
 
-  // how many packs/units the customer ordered (integer)
+ 
+  discountPercentage: {
+    type: Number,
+    default: 0, // store discount at purchase time
+  },
+
   quantity: {
     type: Number,
     required: true,
     default: 1,
   },
 
-  // descriptive unit for the item as a whole (kept for backwards compatibility)
   unit: {
     type: String,
     enum: [
@@ -51,12 +55,11 @@ const orderItemSchema = new mongoose.Schema({
     default: "pcs",
   },
 
-  // NEW: pack size (numeric) and pack unit (e.g. 200, 'g') — taken from product.variant
   packSize: {
-    type: Number, // e.g. 200
+    type: Number,
   },
   packUnit: {
-    type: String, // e.g. 'g', 'kg', 'ml', 'pcs'
+    type: String,
   },
 });
 
@@ -66,6 +69,7 @@ const orderSchema = new mongoose.Schema(
       type: String,
       unique: true,
       sparse: true,
+      index: true,
     },
 
     customOrderId: {
@@ -76,6 +80,7 @@ const orderSchema = new mongoose.Schema(
 
     customerId: {
       type: String,
+      index: true,
     },
 
     address: {
@@ -100,6 +105,7 @@ const orderSchema = new mongoose.Schema(
     status: {
       type: String,
       default: "Pending",
+      index: true,
     },
 
     paymentTransactionId: {
@@ -109,10 +115,18 @@ const orderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes
+orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ createdAt: -1 });
+
 // Auto-generate customOrderId (MO001, MO002, ...)
 orderSchema.pre("save", async function (next) {
   if (!this.customOrderId) {
-    const lastOrder = await mongoose.model("Order").findOne().sort({ createdAt: -1 });
+    const lastOrder = await mongoose
+      .model("Order")
+      .findOne({}, { customOrderId: 1 })
+      .sort({ createdAt: -1 })
+      .lean();
 
     let newId = "MO001";
 
@@ -127,4 +141,5 @@ orderSchema.pre("save", async function (next) {
   next();
 });
 
-module.exports = mongoose.model("Order", orderSchema);
+module.exports =
+  mongoose.models.Order || mongoose.model("Order", orderSchema);
