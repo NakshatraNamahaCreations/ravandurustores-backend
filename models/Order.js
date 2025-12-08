@@ -111,6 +111,9 @@ const orderSchema = new mongoose.Schema(
     paymentTransactionId: {
       type: String,
     },
+
+    dispatchDate: { type: Date },
+deliveryDate: { type: Date },
   },
   { timestamps: true }
 );

@@ -343,29 +343,94 @@ const orderController = {
   // -----------------------------
   // UPDATE ORDER STATUS
   // -----------------------------
-  updateOrderStatus: async (req, res) => {
-    try {
-      const { status } = req.body;
-      if (!status)
-        return res.status(400).json({ message: "Status is required" });
+// -----------------------------
+// UPDATE ORDER STATUS
+// -----------------------------
+updateOrderStatus: async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status)
+      return res.status(400).json({ message: "Status is required" });
 
-      const updatedOrder = await Order.findByIdAndUpdate(
-        req.params.id,
-        { status },
-        { new: true }
-      );
-      if (!updatedOrder)
-        return res.status(404).json({ message: "Order not found" });
+    const newStatus = status;
 
-      res.status(200).json({
-        message: "Status updated successfully",
-        order: updatedOrder,
-      });
-    } catch (error) {
-      console.error("updateOrderStatus error:", error);
-      res.status(500).json({ message: "Server error", error });
+    // 1️⃣ Fetch the order
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
     }
-  },
+
+    const oldStatus = order.status;
+
+    // 2️⃣ Update status & set tracking dates
+    order.status = newStatus;
+
+    // If moved to "Ready for Dispatch" for the first time
+    if (newStatus === "Ready for Dispatch" && !order.dispatchDate) {
+      order.dispatchDate = new Date();
+    }
+
+    // If moved to "Delivered" for the first time
+    if (newStatus === "Delivered" && !order.deliveryDate) {
+      order.deliveryDate = new Date();
+
+      // Optional: if somehow dispatchDate not set earlier, set it too
+      if (!order.dispatchDate) {
+        order.dispatchDate = new Date();
+      }
+    }
+
+    // 3️⃣ Save updated order (with new status + dates)
+    const updatedOrder = await order.save();
+
+    // 4️⃣ If transitioning to "Cancelled" from a non-cancelled state,
+    //     restore stock and adjust soldStock
+    if (oldStatus !== "Cancelled" && newStatus === "Cancelled") {
+      for (const item of order.items) {
+        const orderQty = Number(item.quantity || 0);
+        if (!orderQty || !item.productId) continue;
+
+        const product = await Product.findById(item.productId);
+        if (!product) continue;
+
+        const variant =
+          item.variantId && product.variants
+            ? product.variants.id(item.variantId)
+            : null;
+
+        if (item.variantId && variant && typeof variant.stock === "number") {
+          // Variant-level stock: restore that and reduce soldStock
+          await Product.updateOne(
+            { _id: item.productId, "variants._id": item.variantId },
+            {
+              $inc: {
+                "variants.$.stock": orderQty, // add back variant stock
+                soldStock: -orderQty,         // reduce sold count
+              },
+            }
+          );
+        } else {
+          // Only product-level stock
+          await Product.findByIdAndUpdate(item.productId, {
+            $inc: {
+              stock: orderQty,      // add back to stock
+              soldStock: -orderQty, // reduce sold count
+            },
+          });
+        }
+      }
+    }
+
+    res.status(200).json({
+      message: "Status updated successfully",
+      order: updatedOrder,
+    });
+  } catch (error) {
+    console.error("updateOrderStatus error:", error);
+    res.status(500).json({ message: "Server error", error });
+  }
+},
+
 
   // -----------------------------
   // DELETE ORDER
