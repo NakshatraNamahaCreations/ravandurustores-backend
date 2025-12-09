@@ -2,6 +2,22 @@ const Order = require("../models/Order");
 const Address = require("../models/Address");
 const Product = require("../models/Product");
 
+// 🔥 Normalize any stored image string to a clean relative path
+const normalizeImagePath = (img) => {
+  if (!img || typeof img !== "string") return null;
+
+  // Strip any domain: https://something.com/uploads/xxx.jpg → /uploads/xxx.jpg
+  img = img.replace(/^https?:\/\/[^\/]+/, "");
+
+  // If it starts with "uploads/xxx", ensure it becomes "/uploads/xxx"
+  if (img.startsWith("uploads/")) img = "/" + img;
+
+  // Only accept paths that start with "/uploads/"
+  if (!img.startsWith("/uploads/")) return null;
+
+  return img;
+};
+
 const orderController = {
   // -----------------------------
   // CREATE ORDER
@@ -126,11 +142,27 @@ const orderController = {
 
         const orderQty = Number(item.qty ?? item.quantity ?? 1);
 
-        // pick name/image
+        // pick name
         const productName =
           item.productName ?? product.name ?? "Unknown product";
-        const productImage =
-          item.productImage ?? (product.images && product.images[0]) ?? "";
+
+        // 🔥 Normalize & choose product image safely
+        let productImage = null;
+
+        // 1) Prefer image from item (if frontend sent one)
+        if (item.productImage) {
+          productImage = normalizeImagePath(item.productImage);
+        }
+
+        // 2) Otherwise, fallback to product's first image
+        if (!productImage && product.images && product.images.length > 0) {
+          productImage = normalizeImagePath(product.images[0]);
+        }
+
+        // 3) Final fallback to a default image (ensure you have this file)
+        if (!productImage) {
+          productImage = "/uploads/default.jpg";
+        }
 
         // price normalize
         const variant = item.variantId
@@ -140,7 +172,7 @@ const orderController = {
           item.price ?? (variant?.price ?? product.price ?? 0)
         );
 
-        // 🔹 determine discountPercentage for this item (MODIFIED)
+        // 🔹 determine discountPercentage for this item
         let discountPercentage;
 
         // 1) Prefer a valid numeric value from the item (if provided)
@@ -252,8 +284,8 @@ const orderController = {
           productId: item.productId,
           variantId: item.variantId ?? null,
           productName,
-          productImage,
-          discountPercentage, 
+          productImage,          // ✅ normalized, stable path
+          discountPercentage,
           price,
           quantity: orderQty,
           unit: item.unit ?? product.unit ?? "pcs",
@@ -343,94 +375,94 @@ const orderController = {
   // -----------------------------
   // UPDATE ORDER STATUS
   // -----------------------------
-// -----------------------------
-// UPDATE ORDER STATUS
-// -----------------------------
-updateOrderStatus: async (req, res) => {
-  try {
-    const { status } = req.body;
-    if (!status)
-      return res.status(400).json({ message: "Status is required" });
+  updateOrderStatus: async (req, res) => {
+    try {
+      const { status } = req.body;
+      if (!status)
+        return res.status(400).json({ message: "Status is required" });
 
-    const newStatus = status;
+      const newStatus = status;
 
-    // 1️⃣ Fetch the order
-    const order = await Order.findById(req.params.id);
-    if (!order) {
-      return res.status(404).json({ message: "Order not found" });
-    }
+      // 1️⃣ Fetch the order
+      const order = await Order.findById(req.params.id);
+      if (!order) {
+        return res.status(404).json({ message: "Order not found" });
+      }
 
-    const oldStatus = order.status;
+      const oldStatus = order.status;
 
-    // 2️⃣ Update status & set tracking dates
-    order.status = newStatus;
+      // 2️⃣ Update status & set tracking dates
+      order.status = newStatus;
 
-    // If moved to "Ready for Dispatch" for the first time
-    if (newStatus === "Ready for Dispatch" && !order.dispatchDate) {
-      order.dispatchDate = new Date();
-    }
-
-    // If moved to "Delivered" for the first time
-    if (newStatus === "Delivered" && !order.deliveryDate) {
-      order.deliveryDate = new Date();
-
-      // Optional: if somehow dispatchDate not set earlier, set it too
-      if (!order.dispatchDate) {
+      // If moved to "Ready for Dispatch" for the first time
+      if (newStatus === "Ready for Dispatch" && !order.dispatchDate) {
         order.dispatchDate = new Date();
       }
-    }
 
-    // 3️⃣ Save updated order (with new status + dates)
-    const updatedOrder = await order.save();
+      // If moved to "Delivered" for the first time
+      if (newStatus === "Delivered" && !order.deliveryDate) {
+        order.deliveryDate = new Date();
 
-    // 4️⃣ If transitioning to "Cancelled" from a non-cancelled state,
-    //     restore stock and adjust soldStock
-    if (oldStatus !== "Cancelled" && newStatus === "Cancelled") {
-      for (const item of order.items) {
-        const orderQty = Number(item.quantity || 0);
-        if (!orderQty || !item.productId) continue;
-
-        const product = await Product.findById(item.productId);
-        if (!product) continue;
-
-        const variant =
-          item.variantId && product.variants
-            ? product.variants.id(item.variantId)
-            : null;
-
-        if (item.variantId && variant && typeof variant.stock === "number") {
-          // Variant-level stock: restore that and reduce soldStock
-          await Product.updateOne(
-            { _id: item.productId, "variants._id": item.variantId },
-            {
-              $inc: {
-                "variants.$.stock": orderQty, // add back variant stock
-                soldStock: -orderQty,         // reduce sold count
-              },
-            }
-          );
-        } else {
-          // Only product-level stock
-          await Product.findByIdAndUpdate(item.productId, {
-            $inc: {
-              stock: orderQty,      // add back to stock
-              soldStock: -orderQty, // reduce sold count
-            },
-          });
+        // Optional: if somehow dispatchDate not set earlier, set it too
+        if (!order.dispatchDate) {
+          order.dispatchDate = new Date();
         }
       }
+
+      // 3️⃣ Save updated order (with new status + dates)
+      const updatedOrder = await order.save();
+
+      // 4️⃣ If transitioning to "Cancelled" from a non-cancelled state,
+      //     restore stock and adjust soldStock
+      if (oldStatus !== "Cancelled" && newStatus === "Cancelled") {
+        for (const item of order.items) {
+          const orderQty = Number(item.quantity || 0);
+          if (!orderQty || !item.productId) continue;
+
+          const product = await Product.findById(item.productId);
+          if (!product) continue;
+
+          const variant =
+            item.variantId && product.variants
+              ? product.variants.id(item.variantId)
+              : null;
+
+          if (
+            item.variantId &&
+            variant &&
+            typeof variant.stock === "number"
+          ) {
+            // Variant-level stock: restore that and reduce soldStock
+            await Product.updateOne(
+              { _id: item.productId, "variants._id": item.variantId },
+              {
+                $inc: {
+                  "variants.$.stock": orderQty, // add back variant stock
+                  soldStock: -orderQty, // reduce sold count
+                },
+              }
+            );
+          } else {
+            // Only product-level stock
+            await Product.findByIdAndUpdate(item.productId, {
+              $inc: {
+                stock: orderQty, // add back to stock
+                soldStock: -orderQty, // reduce sold count
+              },
+            });
+          }
+        }
+      }
+
+      res.status(200).json({
+        message: "Status updated successfully",
+        order: updatedOrder,
+      });
+    } catch (error) {
+      console.error("updateOrderStatus error:", error);
+      res.status(500).json({ message: "Server error", error });
     }
-
-    res.status(200).json({
-      message: "Status updated successfully",
-      order: updatedOrder,
-    });
-  } catch (error) {
-    console.error("updateOrderStatus error:", error);
-    res.status(500).json({ message: "Server error", error });
-  }
-},
-
+  },
 
   // -----------------------------
   // DELETE ORDER
