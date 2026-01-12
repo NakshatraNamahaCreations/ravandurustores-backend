@@ -16,16 +16,10 @@ exports.register = async (req, res) => {
       }
   
       // Check if user already exists
-    const existingUser = await User.findOne({
-  $or: [{ email }, { mobilenumber }]
-});
-
-if (existingUser) {
-  return res.status(409).json({
-    message: "Email or Mobile number already exists. Please log in."
-  });
-}
-
+      const existingUser = await User.findOne({ email });
+      if (existingUser) {
+        return res.status(409).json({ message: "Email already exists. Please log in." });
+      }
   
       // Hash password
       const hashedPassword = await bcrypt.hash(password, 8);
@@ -53,48 +47,53 @@ if (existingUser) {
 
 exports.login = async (req, res) => {
   try {
-    const { identifier, password } = req.body;
+    const { email, mobilenumber, password } = req.body;
 
-    if (!identifier || !password) {
-      return res.status(400).json({ message: "Email/Mobile and password are required" });
+    console.log("LOGIN BODY:", req.body);
+
+    if (!password) {
+      return res.status(400).json({ message: "Password is required" });
     }
 
-    // 🔥 LOGIN WITH EMAIL OR MOBILE NUMBER
+    if (!email && !mobilenumber) {
+      return res.status(400).json({
+        message: "Email or mobile number is required",
+      });
+    }
+
     const user = await User.findOne({
       $or: [
-        { email: identifier },
-        { mobilenumber: identifier }
-      ]
+        email ? { email } : null,
+        mobilenumber ? { mobilenumber } : null,
+      ].filter(Boolean),
     });
 
     if (!user) {
-      return res.status(404).json({ message: "⚠️ User not found" });
+      return res.status(404).json({ message: "User not found" });
     }
 
-    // Compare passwords
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(400).json({ message: "❌ Invalid credentials" });
+      return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    // ✅ Send user details
     res.status(200).json({
-      message: "✅ Login successful",
+      message: "Login successful",
       user: {
         id: user._id,
         firstname: user.firstname,
         lastname: user.lastname,
         email: user.email,
-        phone: user.mobilenumber,
+        mobilenumber: user.mobilenumber,
         countryCode: "+91",
-      }
+      },
     });
-
   } catch (error) {
-    console.error("Server error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    console.error("Login error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
+
 
 
 exports.forgotPassword = async (req, res) => {
