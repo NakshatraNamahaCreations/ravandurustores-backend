@@ -47,7 +47,18 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
   try {
-    const { email, mobilenumber, password } = req.body;
+    let { email, mobilenumber, password } = req.body;
+
+if (email) {
+  email = email.toLowerCase().trim();
+}
+
+if (mobilenumber) {
+  mobilenumber = mobilenumber
+    .toString()
+    .replace(/\D/g, "")   // remove spaces, +, -
+    .slice(-10);          // keep last 10 digits
+}
 
     console.log("LOGIN BODY:", req.body);
 
