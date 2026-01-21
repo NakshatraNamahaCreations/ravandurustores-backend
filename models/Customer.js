@@ -21,6 +21,13 @@ const customerSchema = new mongoose.Schema(
       set: v => v.replace(/\D/g, "").slice(-10), // 🔥 ALWAYS normalize
       match: /^[6-9]\d{9}$/,
     },
+    phone: {
+  type: String,
+  required: true,
+  unique: true,
+  trim: true
+},
+
 
     password: {
       type: String,

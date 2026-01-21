@@ -93,6 +93,12 @@ exports.login = async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
+    if (!phone) {
+  return res.status(400).json({
+    message: "Phone number is required"
+  });
+}
+
 
     res.status(200).json({
       message: "Login successful",
