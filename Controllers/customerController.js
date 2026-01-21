@@ -55,16 +55,16 @@ if (!firstname || !lastname || !email || !mobilenumber || !password) {
 ========================= */
 exports.login = async (req, res) => {
   try {
-    const { email, mobilenumber, password, phone } = req.body;
+    let { email, mobilenumber, password } = req.body;
 
     if (!password) {
       return res.status(400).json({ message: "Password is required" });
     }
 
     if (!email && !mobilenumber) {
-      return res
-        .status(400)
-        .json({ message: "Email or mobile number is required" });
+      return res.status(400).json({
+        message: "Email or mobile number is required",
+      });
     }
 
     const query = [];
@@ -73,17 +73,12 @@ exports.login = async (req, res) => {
       query.push({ email: email.toLowerCase().trim() });
     }
 
-   if (mobilenumber) {
-  const cleanPhone = mobilenumber.replace(/\D/g, "").slice(-10);
-  query.push(
-    { mobilenumber: cleanPhone },
-    { phone: cleanPhone }   // 🔥 backward compatibility
-  );
-}
-
+    if (mobilenumber) {
+      const cleanPhone = mobilenumber.replace(/\D/g, "").slice(-10);
+      query.push({ mobilenumber: cleanPhone });
+    }
 
     const user = await Customer.findOne({ $or: query });
-
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -93,12 +88,6 @@ exports.login = async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
-    if (!phone) {
-  return res.status(400).json({
-    message: "Phone number is required"
-  });
-}
-
 
     res.status(200).json({
       message: "Login successful",
@@ -111,7 +100,7 @@ exports.login = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error(err);
+    console.error("Login error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
