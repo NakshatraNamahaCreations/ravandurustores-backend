@@ -55,7 +55,7 @@ if (!firstname || !lastname || !email || !mobilenumber || !password) {
 ========================= */
 exports.login = async (req, res) => {
   try {
-    const { email, mobilenumber, password } = req.body;
+    const { email, mobilenumber, password, phone } = req.body;
 
     if (!password) {
       return res.status(400).json({ message: "Password is required" });
